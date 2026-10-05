@@ -64,10 +64,10 @@ const day=t=>new Date(t-new Date().getTimezoneOffset()*6e4).toISOString().slice(
 const bc=new BroadcastChannel('pdv'),H=new URLSearchParams(location.hash.slice(1)),PAINEL=H.has('painel');if(PAINEL&&H.get('u')){C.url=H.get('u');if(H.get('t'))C.t=H.get('t')}
 let tab='cm',dia=day(Date.now()),cnt=0,lastS=null;
 
-const SV={};let busy=0,ep=0,VER=null,ST=null;
+const SV={};let busy=0,ep=0,VER=null,ST=null,ERR='';
 const norm=()=>S.senhas.forEach(s=>{s.id=s.id||String(s.ts)});
 const snap=k=>{SV[k]=Object.fromEntries(S[k].map(r=>[r.id,JSON.parse(JSON.stringify(r))]))};
-const stHtml=()=>{const[c,t]=!C.url?['var(--mu)','sem planilha: configure em ⚙']:ST===null?['var(--mu)','conectando…']:ST?['var(--ok)','sincronizado']:['#c0392b','sem conexão'];return `<small id="st" style="color:${c}">● ${t}</small>`};
+const stHtml=()=>{const[c,t]=!C.url?['var(--mu)','sem planilha: configure em ⚙']:ST===null?['var(--mu)','conectando…']:ST?['var(--ok)','sincronizado']:['#c0392b','sem conexão'+(ERR?': '+ERR:'')];return `<small id="st" style="color:${c}">● ${t}</small>`};
 function setST(ok){ST=ok;const e=$('#st');if(e)e.outerHTML=stHtml()}
 /* GET via JSONP (evita CORS) */
 function jp(params){return new Promise((ok,no)=>{const cb='jp'+uid(),s=document.createElement('script');
@@ -92,11 +92,11 @@ async function pull(f){if(!C.url||busy)return;const e0=ep;
     VER=v;const a=JSON.stringify(S);for(const k in M)if(Array.isArray(d[M[k]]))S[k]=d[M[k]];norm();
     if(JSON.stringify(S)==a)return;
     if(!PAINEL){L.pdv=JSON.stringify(S);bc.postMessage(1);Object.keys(M).forEach(snap)}render()}
-  catch(e){setST(false)}}
+  catch(e){ERR=String(e&&e.message||e);setST(false)}}
 /* planilha vazia + dados locais: envia os locais; senão baixa da planilha */
 async function firstSync(){try{const d=await jp({});if(d.ok===false)throw d.error;
   if(Object.values(M).every(n=>!(d[n]||[]).length)){Object.keys(M).forEach(k=>SV[k]={});save(...Object.keys(M))}else pull(1)}
-  catch(e){setST(false);toast('Não consegui acessar a URL do Apps Script')}}
+  catch(e){ERR=String(e&&e.message||e);setST(false);toast('Não consegui acessar a URL do Apps Script')}}
 bc.onmessage=()=>{Object.assign(S,JSON.parse(L.pdv));norm();Object.keys(M).forEach(snap);render()};
 norm();Object.keys(M).forEach(snap);
 function toast(m){let t=$('#t');t?.remove();t=document.createElement('div');t.id='t';t.textContent=m;document.body.append(t);setTimeout(()=>t.remove(),2500)}
@@ -108,7 +108,7 @@ function render(){
   if(PAINEL)return painel();
   if(C.auth&&!sessionStorage.em)return login();
   const T=[['cm','Comandas'],['pr','Produtos'],['db','Dashboard'],['sn','Chama senha']];
-  $('#app').innerHTML=`<header><h1>PDV</h1>${stHtml()}${T.map(([k,n])=>`<button class="${tab==k?'on':''}" onclick="tab='${k}';render()">${n}</button>`).join('')}<button onclick="cfg()" aria-label="Configurações">⚙</button></header><main>${{cm:vCm,pr:vPr,db:vDb,sn:vSn}[tab]()}</main>`;
+  $('#app').innerHTML=`<header><h1>PDV <small style="font:12px Barlow,sans-serif;color:var(--mu)">v4</small></h1>${stHtml()}${T.map(([k,n])=>`<button class="${tab==k?'on':''}" onclick="tab='${k}';render()">${n}</button>`).join('')}<button onclick="cfg()" aria-label="Configurações">⚙</button></header><main>${{cm:vCm,pr:vPr,db:vDb,sn:vSn}[tab]()}</main>`;
 }
 
 /* ---------- Comandas ---------- */

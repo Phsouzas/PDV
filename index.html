@@ -50,9 +50,12 @@ td,th{padding:10px;text-align:left;border-bottom:1px solid var(--bd)}
 .pn .m{font:600 min(10vw,110px) 'Barlow Condensed'}
 .pn .h{color:var(--mu);font-size:22px}
 #t{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:10px 18px;border-radius:20px;z-index:30}
+#syncFrame{position:fixed;width:1px;height:1px;border:0;left:-10px;top:-10px;opacity:0}
 @media (prefers-reduced-motion:reduce){.tk{transition:none!important}}
 </style></head><body>
 <div id="app"></div>
+<iframe id="syncFrame" name="syncFrame" title="sincronização"></iframe>
+
 <script>
 const $=s=>document.querySelector(s),L=localStorage;
 const S=Object.assign({produtos:[],comandas:[],vendas:[],senhas:[]},JSON.parse(L.pdv||'{}'));
@@ -64,13 +67,130 @@ const day=t=>new Date(t-new Date().getTimezoneOffset()*6e4).toISOString().slice(
 const bc=new BroadcastChannel('pdv'),PAINEL=location.hash=='#painel';
 let tab='cm',dia=day(Date.now()),cnt=0,lastS=null;
 
-function save(...ks){L.pdv=JSON.stringify(S);bc.postMessage(1);
-  ks.forEach(k=>C.url&&fetch(C.url,{method:'POST',body:JSON.stringify({sheet:M[k],rows:S[k]})}).catch(()=>toast('Falha ao sincronizar com a planilha')));render()}
-async function pull(){if(!C.url)return;try{const d=await(await fetch(C.url)).json();
-  for(const k in M)if(d[M[k]])S[k]=d[M[k]];L.pdv=JSON.stringify(S);render()}catch(e){}}
-bc.onmessage=()=>{Object.assign(S,JSON.parse(L.pdv));render()};
-function toast(m){let t=$('#t');t?.remove();t=document.createElement('div');t.id='t';t.textContent=m;document.body.append(t);setTimeout(()=>t.remove(),2500)}
-function modal(h){let o=$('#m');if(!o){o=document.createElement('div');o.id='m';o.className='ov';document.body.append(o);o.onclick=e=>e.target==o&&fecharM()}o.innerHTML=`<div class="md">${h}</div>`}
+function normalizeUrl(u){
+  return String(u||'').trim().replace(/\s+/g,'').replace(/\/+$/,'');
+}
+
+/*
+  SINCRONIZAÇÃO:
+  - POST: usa formulário para um iframe oculto. Isso evita CORS/preflight
+    que costuma quebrar quando o site está hospedado no GitHub Pages.
+  - GET: usa JSONP, também evitando CORS.
+*/
+function postSheet(sheet,rows){
+  const url=normalizeUrl(C.url);
+  if(!url)return;
+
+  const iframe=document.createElement('iframe');
+  iframe.name='sync_'+uid();
+  iframe.className='syncFrameTemp';
+  iframe.style.cssText='position:fixed;width:1px;height:1px;left:-20px;top:-20px;border:0;opacity:0';
+  document.body.appendChild(iframe);
+
+  const form=document.createElement('form');
+  form.method='POST';
+  form.action=url;
+  form.target=iframe.name;
+  form.style.display='none';
+
+  const payload=document.createElement('input');
+  payload.type='hidden';
+  payload.name='payload';
+  payload.value=JSON.stringify({sheet,rows});
+
+  form.appendChild(payload);
+  document.body.appendChild(form);
+
+  let done=false;
+  const finish=()=>{
+    if(done)return;
+    done=true;
+    setTimeout(()=>{form.remove();iframe.remove()},1500);
+  };
+  iframe.addEventListener('load',finish,{once:true});
+  form.submit();
+  setTimeout(finish,5000);
+}
+
+function save(...ks){
+  L.pdv=JSON.stringify(S);
+  bc.postMessage(1);
+
+  const valid=[...new Set(ks)].filter(k=>M[k]);
+  valid.forEach(k=>postSheet(M[k],S[k]));
+  render();
+}
+
+function jsonpGet(url){
+  return new Promise((resolve,reject)=>{
+    const cb='pdvcb_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+    const sc=document.createElement('script');
+    const sep=url.includes('?')?'&':'?';
+    let timer;
+
+    window[cb]=(data)=>{
+      clearTimeout(timer);
+      delete window[cb];
+      sc.remove();
+      resolve(data);
+    };
+
+    sc.onerror=()=>{
+      clearTimeout(timer);
+      delete window[cb];
+      sc.remove();
+      reject(new Error('Não foi possível acessar o Apps Script'));
+    };
+
+    sc.src=url+sep+'callback='+encodeURIComponent(cb)+'&_='+Date.now();
+    document.body.appendChild(sc);
+
+    timer=setTimeout(()=>{
+      delete window[cb];
+      sc.remove();
+      reject(new Error('Tempo esgotado ao sincronizar'));
+    },12000);
+  });
+}
+
+async function pull(){
+  const url=normalizeUrl(C.url);
+  if(!url)return;
+
+  try{
+    const d=await jsonpGet(url);
+    if(d&&d.ok===false)throw new Error(d.error||'Erro no Apps Script');
+
+    for(const k in M){
+      if(d&&Array.isArray(d[M[k]]))S[k]=d[M[k]];
+    }
+
+    L.pdv=JSON.stringify(S);
+    render();
+  }catch(e){
+    console.warn('Falha na leitura da planilha:',e);
+    toast('Não foi possível sincronizar com a planilha');
+  }
+}
+
+bc.onmessage=()=>{
+  Object.assign(S,JSON.parse(L.pdv||'{}'));
+  render();
+};
+
+function toast(m){
+  let t=$('#t');t?.remove();
+  t=document.createElement('div');t.id='t';t.textContent=m;
+  document.body.append(t);setTimeout(()=>t.remove(),2500)
+}
+function modal(h){
+  let o=$('#m');
+  if(!o){
+    o=document.createElement('div');o.id='m';o.className='ov';
+    document.body.append(o);o.onclick=e=>e.target==o&&fecharM()
+  }
+  o.innerHTML=`<div class="md">${h}</div>`
+}
 const fecharM=()=>$('#m')?.remove();
 
 function render(){
@@ -84,76 +204,173 @@ function render(){
 /* ---------- Comandas ---------- */
 const lines=c=>c.itens.length?[...c.itens,...c.itens].map(i=>`<li>${i.q}x ${i.nome}</li>`).join(''):'<li class="mu">sem produtos</li>';
 const total=c=>c.itens.reduce((a,i)=>a+i.q*i.preco,0);
-function vCm(){return `<div class="grid">${S.comandas.map(c=>`<div class="cm" onclick="det('${c.id}')"><button class="call" onclick="event.stopPropagation();chamar('${c.id}')" aria-label="Chamar senha">📣</button><small>MESA</small><div class="n">${c.mesa}</div><div class="l"><ul class="tk" data-n="${c.itens.length}" style="transform:translateY(22px)">${lines(c)}</ul></div></div>`).join('')}<div class="cm add" onclick="nova()" aria-label="Nova comanda">+</div></div>`}
-setInterval(()=>{cnt++;document.querySelectorAll('.tk').forEach(u=>{const n=+u.dataset.n;if(!n)return;const p=cnt%(n+1);u.style.transition=p?'transform .6s':'none';u.style.transform=`translateY(${(1-p)*22}px)`})},1800);
 
-function nova(){modal(`<h2>Nova comanda</h2><input id="mesa" placeholder="Número ou nome da mesa" autofocus onkeydown="event.key=='Enter'&&criar()"><div class="acts"><button onclick="fecharM()">Cancelar</button><button class="p" onclick="criar()">Abrir comanda</button></div>`);setTimeout(()=>$('#mesa')?.focus(),50)}
-function criar(){const m=$('#mesa').value.trim();if(!m)return toast('Informe a mesa');
-  let c=S.comandas.find(x=>String(x.mesa)==m);if(!c){c={id:uid(),mesa:m,itens:[],ts:Date.now()};S.comandas.push(c);save('comandas')}pick(c.id)}
-function det(id){const c=S.comandas.find(x=>x.id==id);if(!c)return fecharM();
-  modal(`<h2>Mesa ${c.mesa}</h2>${c.itens.map(i=>`<div class="row"><span>${i.nome}<br><small class="mu">${R(i.preco)}</small></span><span><button onclick="chg('${id}','${i.id}',-1,()=>det('${id}'))">−</button> <b>${i.q}</b> <button onclick="chg('${id}','${i.id}',1,()=>det('${id}'))">+</button></span><b>${R(i.q*i.preco)}</b></div>`).join('')||'<p class="mu">Nenhum produto lançado.</p>'}<div class="tot">${R(total(c))}</div><div class="acts"><button onclick="pick('${id}')">+ Produtos</button><button onclick="chamar('${id}')">📣 Chamar</button></div><div class="acts"><button onclick="cancelar('${id}')">Excluir</button><button onclick="fecharM()">Fechar</button><button class="p" onclick="pagar('${id}')">Finalizar</button></div>`)}
-function pick(id,q=''){const c=S.comandas.find(x=>x.id==id);
+function vCm(){
+  return `<div class="grid">${S.comandas.map(c=>`<div class="cm" onclick="det('${c.id}')"><button class="call" onclick="event.stopPropagation();chamar('${c.id}')" aria-label="Chamar senha">📣</button><small>MESA</small><div class="n">${c.mesa}</div><div class="l"><ul class="tk" data-n="${c.itens.length}" style="transform:translateY(22px)">${lines(c)}</ul></div></div>`).join('')}<div class="cm add" onclick="nova()" aria-label="Nova comanda">+</div></div>`
+}
+setInterval(()=>{
+  cnt++;
+  document.querySelectorAll('.tk').forEach(u=>{
+    const n=+u.dataset.n;if(!n)return;
+    const p=cnt%(n+1);u.style.transition=p?'transform .6s':'none';
+    u.style.transform=`translateY(${(1-p)*22}px)`
+  })
+},1800);
+
+function nova(){
+  modal(`<h2>Nova comanda</h2><input id="mesa" placeholder="Número ou nome da mesa" autofocus onkeydown="event.key=='Enter'&&criar()"><div class="acts"><button onclick="fecharM()">Cancelar</button><button class="p" onclick="criar()">Abrir comanda</button></div>`);
+  setTimeout(()=>$('#mesa')?.focus(),50)
+}
+function criar(){
+  const m=$('#mesa').value.trim();if(!m)return toast('Informe a mesa');
+  let c=S.comandas.find(x=>String(x.mesa)==m);
+  if(!c){c={id:uid(),mesa:m,itens:[],ts:Date.now()};S.comandas.push(c);save('comandas')}
+  pick(c.id)
+}
+function det(id){
+  const c=S.comandas.find(x=>x.id==id);if(!c)return fecharM();
+  modal(`<h2>Mesa ${c.mesa}</h2>${c.itens.map(i=>`<div class="row"><span>${i.nome}<br><small class="mu">${R(i.preco)}</small></span><span><button onclick="chg('${id}','${i.id}',-1,()=>det('${id}'))">−</button> <b>${i.q}</b> <button onclick="chg('${id}','${i.id}',1,()=>det('${id}'))">+</button></span><b>${R(i.q*i.preco)}</b></div>`).join('')||'<p class="mu">Nenhum produto lançado.</p>'}<div class="tot">${R(total(c))}</div><div class="acts"><button onclick="pick('${id}')">+ Produtos</button><button onclick="chamar('${id}')">📣 Chamar</button></div><div class="acts"><button onclick="cancelar('${id}')">Excluir</button><button onclick="fecharM()">Fechar</button><button class="p" onclick="pagar('${id}')">Finalizar</button></div>`)
+}
+function pick(id,q=''){
+  const c=S.comandas.find(x=>x.id==id);
   modal(`<h2>Mesa ${c.mesa}: produtos</h2><input id="q" placeholder="Buscar produto" value="${q}" oninput="pick('${id}',this.value)">${S.produtos.filter(p=>p.nome.toLowerCase().includes(q.toLowerCase())).map(p=>{const i=c.itens.find(x=>x.id==p.id);return `<div class="row"><span>${p.nome}<br><small class="mu">${R(p.preco)}${p.ctrl?` · estoque ${p.qtd}`:''}</small></span><button onclick="chg('${id}','${p.id}',1,()=>pick('${id}',$('#q').value))">${i?i.q+' ':''}+</button></div>`}).join('')||'<p class="mu">Cadastre produtos na aba Produtos.</p>'}<div class="acts"><button class="p" onclick="det('${id}')">Concluir</button></div>`);
-  const e=$('#q');e.focus();e.setSelectionRange(q.length,q.length)}
-function chg(cid,pid,d,back){const c=S.comandas.find(x=>x.id==cid),p=S.produtos.find(x=>x.id==pid);let it=c.itens.find(i=>i.id==pid);
+  const e=$('#q');e.focus();e.setSelectionRange(q.length,q.length)
+}
+function chg(cid,pid,d,back){
+  const c=S.comandas.find(x=>x.id==cid),p=S.produtos.find(x=>x.id==pid);let it=c.itens.find(i=>i.id==pid);
   if(d>0){if(!p)return;if(p.ctrl&&p.qtd<=0)return toast('Sem estoque')}
   if(!it){it={id:pid,nome:p.nome,preco:p.preco,q:0};c.itens.push(it)}
-  it.q+=d;if(p?.ctrl)p.qtd-=d;if(it.q<=0)c.itens=c.itens.filter(i=>i!=it);save('comandas','produtos');back()}
-function cancelar(id){if(!confirm('Excluir comanda? O estoque dos itens será devolvido.'))return;
-  const c=S.comandas.find(x=>x.id==id);c.itens.forEach(i=>{const p=S.produtos.find(x=>x.id==i.id);if(p?.ctrl)p.qtd+=i.q});
-  S.comandas=S.comandas.filter(x=>x!=c);save('comandas','produtos');fecharM()}
-function pagar(id){const c=S.comandas.find(x=>x.id==id),t=total(c);
-  modal(`<h2>Mesa ${c.mesa}: pagamento</h2><div class="tot">${R(t)}</div><label>Valor recebido</label><input id="rec" type="number" step="0.01" min="0" inputmode="decimal" oninput="troco(${t})"><div class="row f"><span>Troco</span><b id="tr">${R(0)}</b></div><div class="acts"><button onclick="$('#rec').value=${t};troco(${t})">Valor exato</button><button onclick="det('${id}')">Voltar</button><button id="ok" class="p" disabled onclick="fechar('${id}')">Confirmar</button></div>`);$('#rec').focus()}
-function troco(t){const v=+$('#rec').value||0;$('#tr').textContent=R(Math.max(0,v-t));$('#ok').disabled=v<t}
-function fechar(id){const c=S.comandas.find(x=>x.id==id),t=total(c),r=+$('#rec').value;
+  it.q+=d;if(p?.ctrl)p.qtd-=d;if(it.q<=0)c.itens=c.itens.filter(i=>i!=it);
+  save('comandas','produtos');back()
+}
+function cancelar(id){
+  if(!confirm('Excluir comanda? O estoque dos itens será devolvido.'))return;
+  const c=S.comandas.find(x=>x.id==id);
+  c.itens.forEach(i=>{const p=S.produtos.find(x=>x.id==i.id);if(p?.ctrl)p.qtd+=i.q});
+  S.comandas=S.comandas.filter(x=>x!=c);save('comandas','produtos');fecharM()
+}
+function pagar(id){
+  const c=S.comandas.find(x=>x.id==id),t=total(c);
+  modal(`<h2>Mesa ${c.mesa}: pagamento</h2><div class="tot">${R(t)}</div><label>Valor recebido</label><input id="rec" type="number" step="0.01" min="0" inputmode="decimal" oninput="troco(${t})"><div class="row f"><span>Troco</span><b id="tr">${R(0)}</b></div><div class="acts"><button onclick="$('#rec').value=${t};troco(${t})">Valor exato</button><button onclick="det('${id}')">Voltar</button><button id="ok" class="p" disabled onclick="fechar('${id}')">Confirmar</button></div>`);
+  $('#rec').focus()
+}
+function troco(t){
+  const v=+$('#rec').value||0;$('#tr').textContent=R(Math.max(0,v-t));$('#ok').disabled=v<t
+}
+function fechar(id){
+  const c=S.comandas.find(x=>x.id==id),t=total(c),r=+$('#rec').value;
   S.vendas.push({id:uid(),ts:Date.now(),mesa:c.mesa,total:t,recebido:r,troco:+(r-t).toFixed(2),itens:c.itens});
-  S.comandas=S.comandas.filter(x=>x!=c);save('vendas','comandas');fecharM();toast('Comanda finalizada')}
+  S.comandas=S.comandas.filter(x=>x!=c);save('vendas','comandas');fecharM();toast('Comanda finalizada')
+}
 
 /* ---------- Produtos ---------- */
-function vPr(){return `<div class="acts" style="margin:0 0 12px"><button class="p" style="flex:none" onclick="pf()">+ Novo produto</button></div><table><tr><th>Produto</th><th>Preço</th><th>Estoque</th><th></th></tr>${S.produtos.map(p=>`<tr><td>${p.nome}</td><td>${R(p.preco)}</td><td>${p.ctrl?p.qtd:'<span class="mu">sem controle</span>'}</td><td><button onclick="pf('${p.id}')">Editar</button></td></tr>`).join('')||'<tr><td colspan="4" class="mu">Nenhum produto cadastrado ainda.</td></tr>'}</table>`}
+function vPr(){
+  return `<div class="acts" style="margin:0 0 12px"><button class="p" style="flex:none" onclick="pf()">+ Novo produto</button></div><table><tr><th>Produto</th><th>Preço</th><th>Estoque</th><th></th></tr>${S.produtos.map(p=>`<tr><td>${p.nome}</td><td>${R(p.preco)}</td><td>${p.ctrl?p.qtd:'<span class="mu">sem controle</span>'}</td><td><button onclick="pf('${p.id}')">Editar</button></td></tr>`).join('')||'<tr><td colspan="4" class="mu">Nenhum produto cadastrado ainda.</td></tr>'}</table>`
+}
 let ctrlSt=false;
-function pf(id){const p=S.produtos.find(x=>x.id==id)||{nome:'',preco:'',qtd:0,ctrl:false};ctrlSt=!!p.ctrl;
-  modal(`<h2>${id?'Editar':'Novo'} produto</h2><label>Nome</label><input id="pn" value="${p.nome}"><label>Preço (R$)</label><input id="pp" type="number" step="0.01" value="${p.preco}"><div class="row"><span>Controlar estoque</span><button id="pc" type="button" onclick="tg()"></button></div><div id="pqw"><label>Quantidade em estoque</label><input id="pq" type="number" value="${p.qtd}"></div><div class="acts">${id?`<button onclick="delp('${id}')">Excluir</button>`:''}<button onclick="fecharM()">Cancelar</button><button id="sv" class="p" onclick="savp('${id||''}')">Salvar</button></div>`);tgv()}
+function pf(id){
+  const p=S.produtos.find(x=>x.id==id)||{nome:'',preco:'',qtd:0,ctrl:false};ctrlSt=!!p.ctrl;
+  modal(`<h2>${id?'Editar':'Novo'} produto</h2><label>Nome</label><input id="pn" value="${p.nome}"><label>Preço (R$)</label><input id="pp" type="number" step="0.01" value="${p.preco}"><div class="row"><span>Controlar estoque</span><button id="pc" type="button" onclick="tg()"></button></div><div id="pqw"><label>Quantidade em estoque</label><input id="pq" type="number" value="${p.qtd}"></div><div class="acts">${id?`<button onclick="delp('${id}')">Excluir</button>`:''}<button onclick="fecharM()">Cancelar</button><button id="sv" class="p" onclick="savp('${id||''}')">Salvar</button></div>`);
+  tgv()
+}
 function tgv(){$('#pc').textContent=ctrlSt?'Sim':'Não';$('#pc').className=ctrlSt?'on':'';$('#pqw').style.display=ctrlSt?'':'none'}
 function tg(){ctrlSt=!ctrlSt;tgv()}
-function savp(id){const n=$('#pn').value.trim(),pr=+$('#pp').value;if(!n||!(pr>=0)||$('#pp').value==='')return toast('Preencha nome e preço');
+function savp(id){
+  const n=$('#pn').value.trim(),pr=+$('#pp').value;
+  if(!n||!(pr>=0)||$('#pp').value==='')return toast('Preencha nome e preço');
   let p=S.produtos.find(x=>x.id==id);if(!p){p={id:uid()};S.produtos.push(p)}
-  Object.assign(p,{nome:n,preco:pr,ctrl:ctrlSt,qtd:+$('#pq').value||0});save('produtos');toast('Produto salvo');const b=$('#sv');b.textContent='Fechar';b.onclick=fecharM}
+  Object.assign(p,{nome:n,preco:pr,ctrl:ctrlSt,qtd:+$('#pq').value||0});
+  save('produtos');toast('Produto salvo');
+  const b=$('#sv');b.textContent='Fechar';b.onclick=fecharM
+}
 function delp(id){if(confirm('Excluir produto?')){S.produtos=S.produtos.filter(x=>x.id!=id);save('produtos');fecharM()}}
 
 /* ---------- Dashboard ---------- */
-function vDb(){const v=S.vendas.filter(x=>day(x.ts)==dia),t=v.reduce((a,x)=>a+x.total,0),top={},h=Array(24).fill(0);
+function vDb(){
+  const v=S.vendas.filter(x=>day(x.ts)==dia),t=v.reduce((a,x)=>a+x.total,0),top={},h=Array(24).fill(0);
   v.forEach(x=>{h[new Date(x.ts).getHours()]+=x.total;x.itens.forEach(i=>top[i.nome]=(top[i.nome]||0)+i.q)});
   const mx=Math.max(...h,1),tp=Object.entries(top).sort((a,b)=>b[1]-a[1]).slice(0,8),ni=Object.values(top).reduce((a,b)=>a+b,0);
-  return `<input type="date" value="${dia}" style="width:auto" onclick="this.showPicker&&this.showPicker()" onkeydown="event.preventDefault()" onchange="dia=this.value||dia;render()"><div class="k"><div><span>Faturamento</span><b>${R(t)}</b></div><div><span>Comandas</span><b>${v.length}</b></div><div><span>Ticket médio</span><b>${R(v.length?t/v.length:0)}</b></div><div><span>Itens vendidos</span><b>${ni}</b></div></div><h2>Vendas por hora</h2><div class="bar">${h.map((x,i)=>`<i title="${i}h: ${R(x)}" style="height:${x/mx*100}%"></i>`).join('')}</div><h2>Mais vendidos</h2><table>${tp.map(([n,q])=>`<tr><td>${n}</td><td>${q}</td></tr>`).join('')||'<tr><td class="mu">Nenhuma venda nesta data.</td></tr>'}</table>`}
+  return `<input type="date" value="${dia}" style="width:auto" onclick="this.showPicker&&this.showPicker()" onkeydown="event.preventDefault()" onchange="dia=this.value||dia;render()"><div class="k"><div><span>Faturamento</span><b>${R(t)}</b></div><div><span>Comandas</span><b>${v.length}</b></div><div><span>Ticket médio</span><b>${R(v.length?t/v.length:0)}</b></div><div><span>Itens vendidos</span><b>${ni}</b></div></div><h2>Vendas por hora</h2><div class="bar">${h.map((x,i)=>`<i title="${i}h: ${R(x)}" style="height:${x/mx*100}%"></i>`).join('')}</div><h2>Mais vendidos</h2><table>${tp.map(([n,q])=>`<tr><td>${n}</td><td>${q}</td></tr>`).join('')||'<tr><td class="mu">Nenhuma venda nesta data.</td></tr>'}</table>`
+}
 
 /* ---------- Chama senha ---------- */
-function chamar(id){const c=S.comandas.find(x=>x.id==id);S.senhas.push({mesa:c.mesa,ts:Date.now()});S.senhas=S.senhas.slice(-100);save('senhas');toast(`Mesa ${c.mesa} chamada`)}
-function rechamar(ts){const x=S.senhas.find(z=>z.ts==ts);S.senhas.push({mesa:x.mesa,ts:Date.now()});save('senhas')}
-function abrirPainel(){const w=window.open(location.href.split('#')[0]+'#painel','_blank');if(!w)toast('Pop-up bloqueado: libere pop-ups deste site para abrir o painel')}
-function vSn(){const s=S.senhas.at(-1);
-  return `<div class="acts" style="margin:0 0 12px"><button class="p" style="flex:none" onclick="abrirPainel()">Abrir painel (2ª tela)</button></div>${s?`<div class="k"><div><span>Última chamada</span><b>Mesa ${s.mesa}</b></div></div>`:''}<table>${S.senhas.slice(-15).reverse().map(x=>`<tr><td>Mesa ${x.mesa}</td><td>${new Date(x.ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</td><td><button onclick="rechamar(${x.ts})">Chamar de novo</button></td></tr>`).join('')||'<tr><td class="mu">Chame uma mesa pelo card da comanda (📣).</td></tr>'}</table>`}
+function chamar(id){
+  const c=S.comandas.find(x=>x.id==id);
+  S.senhas.push({mesa:c.mesa,ts:Date.now()});S.senhas=S.senhas.slice(-100);
+  save('senhas');toast(`Mesa ${c.mesa} chamada`)
+}
+function rechamar(ts){
+  const x=S.senhas.find(z=>z.ts==ts);
+  S.senhas.push({mesa:x.mesa,ts:Date.now()});save('senhas')
+}
+function abrirPainel(){
+  const w=window.open(location.href.split('#')[0]+'#painel','_blank');
+  if(!w)toast('Pop-up bloqueado: libere pop-ups deste site para abrir o painel')
+}
+function vSn(){
+  const s=S.senhas.at(-1);
+  return `<div class="acts" style="margin:0 0 12px"><button class="p" style="flex:none" onclick="abrirPainel()">Abrir painel (2ª tela)</button></div>${s?`<div class="k"><div><span>Última chamada</span><b>Mesa ${s.mesa}</b></div></div>`:''}<table>${S.senhas.slice(-15).reverse().map(x=>`<tr><td>Mesa ${x.mesa}</td><td>${new Date(x.ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</td><td><button onclick="rechamar(${x.ts})">Chamar de novo</button></td></tr>`).join('')||'<tr><td class="mu">Chame uma mesa pelo card da comanda (📣).</td></tr>'}</table>`
+}
 let AC;
-function bip(){try{AC=AC||new AudioContext();AC.resume();[0,.35,.7].forEach(d=>{const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime+d;o.connect(g);g.connect(AC.destination);o.type='square';o.frequency.value=d==.35?660:990;g.gain.setValueAtTime(.25,t);g.gain.exponentialRampToValueAtTime(.001,t+.3);o.start(t);o.stop(t+.3)})}catch(e){}}
+function bip(){
+  try{
+    AC=AC||new AudioContext();AC.resume();
+    [0,.35,.7].forEach(d=>{
+      const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime+d;
+      o.connect(g);g.connect(AC.destination);o.type='square';o.frequency.value=d==.35?660:990;
+      g.gain.setValueAtTime(.25,t);g.gain.exponentialRampToValueAtTime(.001,t+.3);o.start(t);o.stop(t+.3)
+    })
+  }catch(e){}
+}
 function ativar(){try{AC=AC||new AudioContext();AC.resume();$('#som').textContent='Som ativado'}catch(e){}}
-function painel(){const s=S.senhas.at(-1),k=s?s.ts:0;if(lastS===k&&$('#pn0'))return;
+function painel(){
+  const s=S.senhas.at(-1),k=s?s.ts:0;
+  if(lastS===k&&$('#pn0'))return;
   const novo=lastS!==null&&!!s&&k!==lastS;lastS=k;
   $('#app').innerHTML=`<div class="pn" id="pn0" onclick="ativar()">${s?`<div class="h">Mesa</div><div class="s ${novo?'blink':''}" id="ms">${s.mesa}</div>`:'<div class="m mu">Aguardando chamada</div>'}<div class="h" id="som">${AC&&AC.state=='running'?'':'Clique na tela para ativar o som'}</div></div>`;
-  if(novo){bip();try{speechSynthesis.speak(Object.assign(new SpeechSynthesisUtterance('Mesa '+s.mesa),{lang:'pt-BR'}))}catch(e){}setTimeout(()=>$('#ms')?.classList.remove('blink'),20000)}}
+  if(novo){bip();try{speechSynthesis.speak(Object.assign(new SpeechSynthesisUtterance('Mesa '+s.mesa),{lang:'pt-BR'}))}catch(e){}setTimeout(()=>$('#ms')?.classList.remove('blink'),20000)}
+}
 
 /* ---------- Configurações e login ---------- */
 let authSt=false;
-function cfg(){authSt=C.auth;modal(`<h2>Configurações</h2><div class="row"><span>Tema</span><span><button id="tl" class="${C.t=='light'?'on':''}" onclick="setT('light')">Claro</button> <button id="td" class="${C.t=='dark'?'on':''}" onclick="setT('dark')">Escuro</button></span></div><div class="row"><span>Segunda tela (chama senha)</span><button onclick="abrirPainel()">Abrir</button></div><div style="padding:10px 0"><label>URL do Apps Script (planilha)</label><input id="cu" value="${C.url}" placeholder="https://script.google.com/macros/s/.../exec"></div><div class="row"><span>Acessar autenticado com e-mail</span><button id="ca" type="button" onclick="authSt=!authSt;tga()"></button></div><input id="ce" type="email" value="${C.email}" placeholder="seu@email.com" style="margin-top:8px"><div class="acts"><button onclick="fecharM()">Cancelar</button><button id="sv" class="p" onclick="savc()">Salvar</button></div>`);tga()}
+function cfg(){
+  authSt=C.auth;
+  modal(`<h2>Configurações</h2><div class="row"><span>Tema</span><span><button id="tl" class="${C.t=='light'?'on':''}" onclick="setT('light')">Claro</button> <button id="td" class="${C.t=='dark'?'on':''}" onclick="setT('dark')">Escuro</button></span></div><div class="row"><span>Segunda tela (chama senha)</span><button onclick="abrirPainel()">Abrir</button></div><div style="padding:10px 0"><label>URL do Apps Script (planilha)</label><input id="cu" value="${C.url}" placeholder="https://script.google.com/macros/s/.../exec"></div><div class="row"><span>Acessar autenticado com e-mail</span><button id="ca" type="button" onclick="authSt=!authSt;tga()"></button></div><input id="ce" type="email" value="${C.email}" placeholder="seu@email.com" style="margin-top:8px"><div class="acts"><button onclick="fecharM()">Cancelar</button><button id="sv" class="p" onclick="savc()">Salvar</button></div>`);
+  tga()
+}
 function tga(){$('#ca').textContent=authSt?'Sim':'Não';$('#ca').className=authSt?'on':''}
 function setT(t){C.t=t;sc();$('#tl').className=t=='light'?'on':'';$('#td').className=t=='dark'?'on':''}
-function savc(){const e=$('#ce').value.trim();if(authSt&&!e)return toast('Informe o e-mail para ativar o login');
-  C.url=$('#cu').value.trim();C.auth=authSt;C.email=e;if(C.auth)sessionStorage.em=e;sc();pull();toast('Configurações salvas');const b=$('#sv');b.textContent='Fechar';b.onclick=fecharM}
+function savc(){
+  const e=$('#ce').value.trim();
+  if(authSt&&!e)return toast('Informe o e-mail para ativar o login');
+  C.url=normalizeUrl($('#cu').value);
+  C.auth=authSt;C.email=e;sc();
+  pull();
+  toast('Configurações salvas');
+  const b=$('#sv');b.textContent='Fechar';b.onclick=fecharM
+}
 const sc=()=>{L.pdvc=JSON.stringify(C);render()};
-function login(){$('#app').innerHTML=`<div class="pn"><div class="md"><h2>Entrar</h2><input id="le" type="email" placeholder="Seu e-mail" onkeydown="event.key=='Enter'&&entrar()"><div class="acts"><button class="p" onclick="entrar()">Entrar</button></div></div></div>`}
-async function entrar(){const e=$('#le').value.trim().toLowerCase();let ok=e&&e==C.email.toLowerCase();
-  if(C.url)try{ok=(await(await fetch(`${C.url}?action=auth&email=${encodeURIComponent(e)}`)).json()).ok}catch(x){}
-  if(ok){sessionStorage.em=e;render()}else toast('E-mail não autorizado')}
+function login(){
+  $('#app').innerHTML=`<div class="pn"><div class="md"><h2>Entrar</h2><input id="le" type="email" placeholder="Seu e-mail" onkeydown="event.key=='Enter'&&entrar()"><div class="acts"><button class="p" onclick="entrar()">Entrar</button></div></div></div>`
+}
+async function entrar(){
+  const e=$('#le').value.trim().toLowerCase();
+  let ok=e&&e==C.email.toLowerCase();
+  if(C.url){
+    try{
+      const d=await jsonpGet(`${normalizeUrl(C.url)}?action=auth&email=${encodeURIComponent(e)}`);
+      ok=!!d.ok
+    }catch(x){}
+  }
+  if(ok){sessionStorage.em=e;render()}else toast('E-mail não autorizado')
+}
 
 render();
-if(PAINEL){if(!C.url&&!S.senhas.length)setTimeout(()=>{const u=prompt('Cole a URL do Apps Script para sincronizar (opcional):');if(u){C.url=u;sc()}},500);setInterval(pull,4000)}else pull();
+if(PAINEL){
+  if(!C.url&&!S.senhas.length)setTimeout(()=>{
+    const u=prompt('Cole a URL do Apps Script para sincronizar (opcional):');
+    if(u){C.url=normalizeUrl(u);sc()}
+  },500);
+  setInterval(pull,4000)
+}else pull();
 </script></body></html>

@@ -118,7 +118,11 @@ function save(...ks){
 
   const valid=[...new Set(ks)].filter(k=>M[k]);
   valid.forEach(k=>postSheet(M[k],S[k]));
+
   render();
+
+  // Dá tempo para o Apps Script gravar e depois confirma o estado do servidor.
+  setTimeout(()=>pull(false),1200);
 }
 
 function jsonpGet(url){
@@ -153,23 +157,42 @@ function jsonpGet(url){
   });
 }
 
-async function pull(){
-  const url=normalizeUrl(C.url);
-  if(!url)return;
+let syncing=false;
+let lastSyncOK=0;
 
+async function pull(showError=false){
+  const url=normalizeUrl(C.url);
+  if(!url || syncing)return;
+
+  syncing=true;
   try{
     const d=await jsonpGet(url);
-    if(d&&d.ok===false)throw new Error(d.error||'Erro no Apps Script');
 
+    if(d&&d.ok===false){
+      throw new Error(d.error||'Erro no Apps Script');
+    }
+
+    let changed=false;
     for(const k in M){
-      if(d&&Array.isArray(d[M[k]]))S[k]=d[M[k]];
+      if(d&&Array.isArray(d[M[k]])){
+        const incoming=JSON.stringify(d[M[k]]);
+        const current=JSON.stringify(S[k]);
+        if(incoming!==current){
+          S[k]=d[M[k]];
+          changed=true;
+        }
+      }
     }
 
     L.pdv=JSON.stringify(S);
-    render();
+    lastSyncOK=Date.now();
+
+    if(changed)render();
   }catch(e){
     console.warn('Falha na leitura da planilha:',e);
-    toast('Não foi possível sincronizar com a planilha');
+    if(showError)toast('Não foi possível sincronizar com a planilha');
+  }finally{
+    syncing=false;
   }
 }
 
@@ -366,11 +389,19 @@ async function entrar(){
 }
 
 render();
+
 if(PAINEL){
   if(!C.url&&!S.senhas.length)setTimeout(()=>{
     const u=prompt('Cole a URL do Apps Script para sincronizar (opcional):');
     if(u){C.url=normalizeUrl(u);sc()}
   },500);
-  setInterval(pull,4000)
-}else pull();
+  // Painel de senhas: atualiza automaticamente.
+  setInterval(pull,3000);
+}else{
+  // Todos os dispositivos/caixas: atualiza automaticamente.
+  // Isso permite que produtos, comandas, vendas e senhas
+  // apareçam sem precisar recarregar a página.
+  pull();
+  setInterval(pull,3000);
+}
 </script></body></html>

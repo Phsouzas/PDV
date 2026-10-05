@@ -64,11 +64,11 @@ const day=t=>new Date(t-new Date().getTimezoneOffset()*6e4).toISOString().slice(
 const bc=new BroadcastChannel('pdv'),H=new URLSearchParams(location.hash.slice(1)),PAINEL=H.has('painel');if(PAINEL&&H.get('u')){C.url=H.get('u');if(H.get('t'))C.t=H.get('t')}
 let tab='cm',dia=day(Date.now()),cnt=0,lastS=null;
 
-const SV={};let busy=0,ep=0,VER=null,ST=false;
+const SV={};let busy=0,ep=0,VER=null,ST=null;
 const norm=()=>S.senhas.forEach(s=>{s.id=s.id||String(s.ts)});
 const snap=k=>{SV[k]=Object.fromEntries(S[k].map(r=>[r.id,JSON.parse(JSON.stringify(r))]))};
-const stHtml=()=>C.url?`<small id="st" style="color:${ST?'var(--ok)':'#c0392b'}">● ${ST?'sincronizado':'sem conexão'}</small>`:'';
-function setST(ok){ST=ok;const e=$('#st');if(e){e.style.color=ok?'var(--ok)':'#c0392b';e.textContent='● '+(ok?'sincronizado':'sem conexão')}}
+const stHtml=()=>{const[c,t]=!C.url?['var(--mu)','sem planilha: configure em ⚙']:ST===null?['var(--mu)','conectando…']:ST?['var(--ok)','sincronizado']:['#c0392b','sem conexão'];return `<small id="st" style="color:${c}">● ${t}</small>`};
+function setST(ok){ST=ok;const e=$('#st');if(e)e.outerHTML=stHtml()}
 /* GET via JSONP (evita CORS) */
 function jp(params){return new Promise((ok,no)=>{const cb='jp'+uid(),s=document.createElement('script');
   const end=()=>{clearTimeout(t);delete window[cb];s.remove()},t=setTimeout(()=>{end();no('timeout')},15000);
